@@ -1,0 +1,7 @@
+build/
+*.h264
+*.exe
+*.obj
+*.pdb
+*.ilk
+.vs/
