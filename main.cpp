@@ -269,7 +269,7 @@ private:
             if (inView && outView) {
                 // GPU 执行转换指令
                 D3D11_VIDEO_PROCESSOR_STREAM stream = { TRUE, 0, 0, 0, 0, NULL, inView, NULL };
-                video_context->VideoProcessorBlt(video_processor, outputView, 0, 1, &stream);
+                video_context->VideoProcessorBlt(video_processor, outView, 0, 1, &stream);
             }
             if (inView) inView->Release();
             if (outView) outView->Release();
