@@ -4,7 +4,7 @@ project(DXGI_FFmpeg_Capture)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-set(FFMPEG_DIR "C:/Users/wulintao/Desktop/ffmpeg")
+set(FFMPEG_DIR "D:/ffmpeg")
 
 if(MSVC)
     # /utf-8 标志：将源文件和执行字符集都设置为 UTF-8
