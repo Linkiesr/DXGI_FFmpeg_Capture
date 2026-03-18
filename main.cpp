@@ -9,6 +9,7 @@
 #include <thread>
 #include <string>
 #include <cstdint>
+#include <clocale>
 #include <d3d11.h>
 #include <dxgi1_2.h>
 
@@ -475,6 +476,22 @@ public:
         }
 
         // GPU 执行转换指令
+        D3D11_VIDEO_PROCESSOR_COLOR_SPACE stream_cs = {};
+        stream_cs.Usage = 0;
+        stream_cs.RGB_Range = 1; // full range RGB input (desktop BGRA)
+        stream_cs.YCbCr_Matrix = 1; // BT.709
+        stream_cs.YCbCr_xvYCC = 0;
+        stream_cs.Nominal_Range = D3D11_VIDEO_PROCESSOR_NOMINAL_RANGE_0_255;
+        video_context->VideoProcessorSetStreamColorSpace(video_processor, 0, &stream_cs);
+
+        D3D11_VIDEO_PROCESSOR_COLOR_SPACE output_cs = {};
+        output_cs.Usage = 0;
+        output_cs.RGB_Range = 0;
+        output_cs.YCbCr_Matrix = 1; // BT.709
+        output_cs.YCbCr_xvYCC = 0;
+        output_cs.Nominal_Range = D3D11_VIDEO_PROCESSOR_NOMINAL_RANGE_16_235;
+        video_context->VideoProcessorSetOutputColorSpace(video_processor, &output_cs);
+
         D3D11_VIDEO_PROCESSOR_STREAM stream = {};
         stream.Enable = TRUE;
         stream.pInputSurface = inView;
@@ -606,6 +623,10 @@ private:
         codec_ctx->time_base = { 1, kMaxFps };
         codec_ctx->framerate = { kMaxFps, 1 }; // 限制最高编码帧率为 150 FPS
         codec_ctx->pix_fmt = AV_PIX_FMT_D3D11;
+        codec_ctx->color_primaries = AVCOL_PRI_BT709;
+        codec_ctx->color_trc = AVCOL_TRC_BT709;
+        codec_ctx->colorspace = AVCOL_SPC_BT709;
+        codec_ctx->color_range = AVCOL_RANGE_MPEG;
         codec_ctx->bit_rate = 30000000; // 设置比特率
         codec_ctx->max_b_frames = 0;    // 低延迟场景下关闭 B 帧
 
@@ -764,7 +785,10 @@ public:
         std::vector<double> latencies_in_second;
 
         const auto frame_interval = microseconds(1000000 / H264TextureEncoder::kMaxFps);
+        const auto static_frame_interval = milliseconds(400); // no-change frame keepalive: about 2~3 FPS
         auto next_frame_time = steady_clock::now();
+        auto last_static_push_time = steady_clock::now() - static_frame_interval;
+        ID3D11Texture2D* last_frame_tex = nullptr;
 
         while (total_encoded < totalFramesToCapture) {
             // 速率限制到最高 150 FPS，避免无意义空转
@@ -781,13 +805,33 @@ public:
             }
 
             // 屏幕画面未变化：不继续推帧
-            if (!hasNewFrame) {
+            ID3D11Texture2D* encodeTex = nullptr;
+            if (hasNewFrame) {
+                SafeRelease(last_frame_tex);
+                if (capturedTex) {
+                    capturedTex->AddRef();
+                    last_frame_tex = capturedTex;
+                }
+                encodeTex = capturedTex;
+            }
+            else {
+                auto now = steady_clock::now();
+                if (!last_frame_tex || (now - last_static_push_time) < static_frame_interval) {
+                    continue;
+                }
+                last_frame_tex->AddRef();
+                encodeTex = last_frame_tex;
+                last_static_push_time = now;
+            }
+
+            if (!encodeTex) {
+                SafeRelease(capturedTex);
                 continue;
             }
 
             bool encoded = false;
-            bool ok = encoder.EncodeTexture(capturedTex, encoded);
-            SafeRelease(capturedTex);
+            bool ok = encoder.EncodeTexture(encodeTex, encoded);
+            SafeRelease(encodeTex);
             if (!ok) {
                 std::cerr << "编码过程中断!" << std::endl;
                 break;
@@ -825,6 +869,7 @@ public:
             }
         }
 
+        SafeRelease(last_frame_tex);
         encoder.Flush(); // 刷新编码器剩余帧
     }
 
@@ -837,6 +882,10 @@ private:
 };
 
 int main() {
+    SetConsoleOutputCP(CP_UTF8);
+    SetConsoleCP(CP_UTF8);
+    std::setlocale(LC_ALL, ".UTF-8");
+
     // 获取主屏幕分辨率
     int w = GetSystemMetrics(SM_CXSCREEN) & ~1; // H.264 宽度要求是偶数
     int h = GetSystemMetrics(SM_CYSCREEN) & ~1;
