@@ -1,111 +1,115 @@
 # DXGI_FFmpeg_Capture
 
 一个基于 Windows 的全 GPU 屏幕采集与 H.264 编码示例项目。  
-采集链路使用 `DXGI Desktop Duplication`，颜色转换使用 `D3D11 VideoProcessor`，编码使用 `FFmpeg`（优先 `h264_nvenc`，失败时回退软件 H.264）。
+当前主链路：
 
-## 功能特点
+- `DXGI Desktop Duplication` 抓取桌面 BGRA 纹理
+- `D3D11 shader (bilinear)` 先在 BGRA 空间缩放到可视区域
+- `D3D11 VideoProcessor` 仅做 `BGRA -> NV12` 颜色转换
+- `FFmpeg h264_nvenc` 硬件编码输出 `output.h264`
 
-- DXGI 抓屏：低开销获取桌面纹理
-- GPU 色彩转换：`BGRA -> NV12`
-- 硬件编码优先：优先 `h264_nvenc`
-- 帧复用：复用 `AVFrame`，减少频繁申请释放
-- 变化驱动编码：屏幕无变化时降低无效编码
-- 控制台性能输出：每秒打印 FPS 与延迟统计
+## 功能特性
+
+- 全 GPU 流水线，CPU 参与度低
+- 可视区域动态缩放（码流分辨率保持屏幕分辨率）
+- 可视区域左上角对齐显示
+- 屏幕无变化时降低无效编码推帧
+- 控制台实时输出 FPS/延迟
 
 ## 运行环境
 
-- Windows 10/11
+- Windows 10/11 或 Windows Server（需可用交互桌面会话）
 - Visual Studio 2019/2022（MSVC）
 - CMake >= 3.10
-- FFmpeg 开发库（包含 `include` / `lib` / `bin`）
-- 支持 D3D11 的显卡（使用 NVENC 时建议 NVIDIA）
+- FFmpeg 开发库（`include/lib/bin` 同一套版本）
+- 支持 D3D11 的 NVIDIA GPU（NVENC）
 
-## 目录说明
+## 项目结构
 
-- `main.cpp`：核心实现（抓屏、转换、编码、主流程）
-- `CMakeLists.txt`：构建脚本
-- `CMakeSettings.json`：VS 的 CMake 配置示例
+- `main.cpp`: 核心实现（抓屏、缩放、颜色转换、编码、性能统计）
+- `CMakeLists.txt`: 构建脚本
+- `CMakeSettings.json`: VS CMake 示例配置
 
 ## 构建前配置
 
-当前 `CMakeLists.txt` 中写死了：
+`CMakeLists.txt` 中需设置 FFmpeg 根目录：
 
 ```cmake
 set(FFMPEG_DIR "D:/ffmpeg")
 ```
 
-请改成你本机的 FFmpeg 路径，例如：
-
-```cmake
-set(FFMPEG_DIR "C:/ffmpeg")
-```
-
-并确保以下路径存在：
+请改为你本机路径，且确保存在：
 
 - `${FFMPEG_DIR}/include`
 - `${FFMPEG_DIR}/lib`
 - `${FFMPEG_DIR}/bin`
 
-## 构建方法
-
-在项目根目录执行：
+## 构建
 
 ```powershell
 cmake -S . -B build -G "Visual Studio 17 2022" -A x64
 cmake --build build --config Release
 ```
 
-可执行文件会在：
-
-- `build/Release/DXGI_FFmpeg_Capture.exe`（或 VS 对应输出目录）
-
-构建后会自动把 `${FFMPEG_DIR}/bin` 下 DLL 复制到可执行文件目录。
+构建后会自动把 `${FFMPEG_DIR}/bin` 下 DLL 拷贝到可执行目录。
 
 ## 运行
 
 ```powershell
-.\build\Release\DXGI_FFmpeg_Capture.exe
+.\build\Release\DXGI_FFmpeg_Capture.exe [visible_width] [visible_height]
 ```
 
-程序默认行为：
+参数说明：
 
-- 读取主屏分辨率（宽高会处理为偶数）
-- 采集并编码 1000 帧
-- 输出裸流文件 `output.h264`
+- 不传参数：可视区域默认等于屏幕分辨率
+- 传参数：可视区域使用指定宽高（会自动修正为偶数，并钳制不超过屏幕分辨率）
 
-## 输出文件说明
+热键：
 
-- `output.h264` 是**裸 H.264 Annex B 流**，不是 MP4 容器。
-- 可用 FFplay 直接播放：
+- `F6`: 切换可视区域为 `1280x720`
+- `F7`: 切换可视区域为 `1920x1080`
+- `F8`: 恢复可视区域为屏幕分辨率
+
+默认测试会编码 1000 帧，输出 `output.h264`（裸 H.264 Annex B 流）。
+
+## 输出文件
+
+- 输出文件：`output.h264`
+- 直接播放：
 
 ```powershell
 ffplay .\output.h264
 ```
 
-- 如需封装成 MP4：
+- 封装为 MP4：
 
 ```powershell
 ffmpeg -framerate 60 -i .\output.h264 -c copy .\output.mp4
 ```
 
-`-framerate` 请按实际编码帧率调整。
-
 ## 常见问题
 
-1. `h264_nvenc` 打不开
-- 可能截图输出不在 NVIDIA 适配器上，或驱动/NVENC 运行环境不匹配。
-- 程序会尝试回退到软件 H.264。
+1. `h264_nvenc` 打不开（如 `OpenEncodeSessionEx failed` 或 `cuInit failed`）
 
-2. 运行时报找不到 FFmpeg DLL
-- 确认可执行目录下存在 FFmpeg 的运行时 DLL（`avcodec*.dll` 等）。
+- 多数是 NVENC/CUDA 运行环境问题，不是业务逻辑问题。
+- 优先检查：
+  - 驱动是否最新并重启
+  - 是否本地交互会话（RDP 会话常不稳定）
+  - 是否混用了多套 FFmpeg / NVIDIA DLL
+  - 可执行目录是否误放了不匹配的 `nvcuda.dll` / `nvEncodeAPI64.dll`
 
-3. 黑屏或抓取失败
-- 检查系统是否支持 Desktop Duplication（Win10/11 通常支持）。
-- 远程桌面、权限、显卡切换策略都可能影响抓屏。
+2. 1080p 缩到 720p 出现边缘混色（粉边）
 
-## 代码结构（主流程）
+- 已改为“先 BGRA bilinear 缩放，再 VP 仅做 BGRA->NV12”来降低该问题。
+- 若仍有少量残留，通常是 NV12（4:2:0）色度抽样带来的边缘色度损失。
 
-- `DxgiScreenCapturer`：负责桌面捕获
-- `H264TextureEncoder`：负责纹理编码
-- `ScreenCapturePipeline`：负责调度与性能统计
+3. 颜色偏亮/过曝
+
+- 本项目已采用 limited-range 配置（16-235）降低过曝风险。
+- 若播放端颜色管理异常，仍可能出现观感偏差。
+
+## 说明
+
+本项目用于测试 GPU 编码链路与问题定位，不包含软件编码兜底路径。  
+若 NVENC 环境不可用，程序会初始化失败并打印错误日志。
 
