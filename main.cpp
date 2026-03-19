@@ -1,4 +1,5 @@
 #define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
 #include <windows.h>
 #include <iostream>
 #include <vector>
@@ -10,6 +11,7 @@
 #include <string>
 #include <cstdint>
 #include <clocale>
+#include <cstdlib>
 #include <d3d11.h>
 #include <dxgi1_2.h>
 
@@ -37,6 +39,11 @@ void SafeRelease(T*& ptr) {
     }
 }
 
+static int NormalizeEvenDimension(int value) {
+    if (value < 2) value = 2;
+    return value & ~1;
+}
+
 /**
  * DxgiScreenCapturer 类：专门负责屏幕截图。
  * 流程：D3D11 设备初始化 -> DXGI 桌面复制 -> 输出最新一帧的桌面纹理
@@ -58,8 +65,8 @@ public:
      */
     bool Initialize(int w, int h) {
         Cleanup();
-        width = w;
-        height = h;
+        width = NormalizeEvenDimension(w);
+        height = NormalizeEvenDimension(h);
 
         std::cout << "[Init] 初始化 D3D11 设备..." << std::endl;
         if (!InitD3D11()) {
@@ -418,6 +425,23 @@ public:
         return true;
     }
 
+    bool SetVisibleResolution(int requestedW, int requestedH) {
+        requestedW = NormalizeEvenDimension(requestedW);
+        requestedH = NormalizeEvenDimension(requestedH);
+
+        int clampedW = (std::min)(requestedW, width);
+        int clampedH = (std::min)(requestedH, height);
+        if (clampedW == visible_width && clampedH == visible_height) {
+            return true;
+        }
+
+        visible_width = clampedW;
+        visible_height = clampedH;
+        std::cout << "[Encoder] visible area => " << visible_width << "x" << visible_height
+            << " (stream: " << width << "x" << height << ")" << std::endl;
+        return true;
+    }
+
     /**
      * 将一张 BGRA 屏幕纹理编码成 H.264
      * @param capturedTex 截图模块输出的桌面纹理
@@ -492,6 +516,24 @@ public:
         output_cs.Nominal_Range = D3D11_VIDEO_PROCESSOR_NOMINAL_RANGE_16_235;
         video_context->VideoProcessorSetOutputColorSpace(video_processor, &output_cs);
 
+        // 输出码流分辨率固定，变化的是可视区域（居中显示）
+        D3D11_VIDEO_COLOR bgColor = {};
+        bgColor.YCbCr = { 16.0f / 255.0f, 128.0f / 255.0f, 128.0f / 255.0f, 1.0f };
+        video_context->VideoProcessorSetOutputBackgroundColor(video_processor, FALSE, &bgColor);
+
+        D3D11_TEXTURE2D_DESC srcDesc = {};
+        capturedTex->GetDesc(&srcDesc);
+        RECT srcRect = { 0, 0, (LONG)srcDesc.Width, (LONG)srcDesc.Height };
+        video_context->VideoProcessorSetStreamSourceRect(video_processor, 0, TRUE, &srcRect);
+
+        int dstW = (std::min)(visible_width, width);
+        int dstH = (std::min)(visible_height, height);
+        LONG dstLeft = 0;
+        LONG dstTop = 0;
+        RECT dstRect = { dstLeft, dstTop, dstLeft + dstW, dstTop + dstH };
+        video_context->VideoProcessorSetOutputTargetRect(video_processor, TRUE, &dstRect);
+        video_context->VideoProcessorSetStreamDestRect(video_processor, 0, TRUE, &dstRect);
+
         D3D11_VIDEO_PROCESSOR_STREAM stream = {};
         stream.Enable = TRUE;
         stream.pInputSurface = inView;
@@ -545,9 +587,14 @@ public:
         return (codec_ctx && codec_ctx->codec) ? codec_ctx->codec->name : "未知";
     }
 
+    int GetVisibleWidth() const { return visible_width; }
+    int GetVisibleHeight() const { return visible_height; }
+
 private:
     int width = 0;
     int height = 0;
+    int visible_width = 0;
+    int visible_height = 0;
     std::string output_filename;
 
     // 复用截图模块提供的 D3D11 设备
@@ -760,14 +807,27 @@ public:
      * @param w 捕获宽度
      * @param h 捕获高度
      */
-    bool Initialize(int w, int h) {
-        width = w;
-        height = h;
+    bool Initialize(int captureW, int captureH, int visibleW, int visibleH) {
+        width = captureW;
+        height = captureH;
+        visible_width = NormalizeEvenDimension(visibleW > 0 ? visibleW : captureW);
+        visible_height = NormalizeEvenDimension(visibleH > 0 ? visibleH : captureH);
 
-        if (!capturer.Initialize(w, h)) return false;
-        if (!encoder.Initialize(capturer.GetDevice(), capturer.GetContext(), w, h)) return false;
+        if (!capturer.Initialize(captureW, captureH)) return false;
+        if (!encoder.Initialize(capturer.GetDevice(), capturer.GetContext(), captureW, captureH)) return false;
+        encoder.SetVisibleResolution(visible_width, visible_height);
 
         std::cout << "[Init] 所有硬件模块就绪。" << std::endl;
+        std::cout << "[Init] stream=" << width << "x" << height
+            << ", visible=" << encoder.GetVisibleWidth() << "x" << encoder.GetVisibleHeight() << std::endl;
+        std::cout << "[Hotkey] F6=1280x720, F7=1920x1080, F8=Screen" << std::endl;
+        return true;
+    }
+
+    bool RequestVisibleResolution(int w, int h) {
+        pending_visible_width = NormalizeEvenDimension(w);
+        pending_visible_height = NormalizeEvenDimension(h);
+        has_pending_visible_change = true;
         return true;
     }
 
@@ -796,6 +856,16 @@ public:
             std::this_thread::sleep_until(next_frame_time);
 
             auto frame_start = high_resolution_clock::now();
+            PollDynamicResolutionHotkeys();
+            if (has_pending_visible_change) {
+                if (!encoder.SetVisibleResolution(pending_visible_width, pending_visible_height)) {
+                    std::cerr << "切换可视分辨率失败!" << std::endl;
+                    break;
+                }
+                visible_width = encoder.GetVisibleWidth();
+                visible_height = encoder.GetVisibleHeight();
+                has_pending_visible_change = false;
+            }
 
             bool hasNewFrame = false;
             ID3D11Texture2D* capturedTex = nullptr;
@@ -876,12 +946,34 @@ public:
 private:
     int width = 0;
     int height = 0;
+    int visible_width = 0;
+    int visible_height = 0;
+    int pending_visible_width = 0;
+    int pending_visible_height = 0;
+    bool has_pending_visible_change = false;
+    bool f6_last_down = false;
+    bool f7_last_down = false;
+    bool f8_last_down = false;
 
     DxgiScreenCapturer capturer;
     H264TextureEncoder encoder;
+
+    void PollDynamicResolutionHotkeys() {
+        bool f6_down = (GetAsyncKeyState(VK_F6) & 0x8000) != 0;
+        bool f7_down = (GetAsyncKeyState(VK_F7) & 0x8000) != 0;
+        bool f8_down = (GetAsyncKeyState(VK_F8) & 0x8000) != 0;
+
+        if (f6_down && !f6_last_down) RequestVisibleResolution(1280, 720);
+        if (f7_down && !f7_last_down) RequestVisibleResolution(1920, 1080);
+        if (f8_down && !f8_last_down) RequestVisibleResolution(width, height);
+
+        f6_last_down = f6_down;
+        f7_last_down = f7_down;
+        f8_last_down = f8_down;
+    }
 };
 
-int main() {
+int main(int argc, char** argv) {
     SetConsoleOutputCP(CP_UTF8);
     SetConsoleCP(CP_UTF8);
     std::setlocale(LC_ALL, ".UTF-8");
@@ -889,10 +981,18 @@ int main() {
     // 获取主屏幕分辨率
     int w = GetSystemMetrics(SM_CXSCREEN) & ~1; // H.264 宽度要求是偶数
     int h = GetSystemMetrics(SM_CYSCREEN) & ~1;
+    int visibleW = w;
+    int visibleH = h;
+    if (argc >= 3) {
+        visibleW = NormalizeEvenDimension(std::atoi(argv[1]));
+        visibleH = NormalizeEvenDimension(std::atoi(argv[2]));
+    }
     std::cout << "启动全 GPU 性能监控 (" << w << "x" << h << ")" << std::endl;
+    std::cout << "H.264 stream resolution: " << w << "x" << h << std::endl;
+    std::cout << "Visible area request: " << visibleW << "x" << visibleH << std::endl;
 
     ScreenCapturePipeline pipeline("output.h264");
-    if (pipeline.Initialize(w, h)) {
+    if (pipeline.Initialize(w, h, visibleW, visibleH)) {
         // 捕获 1000 帧来评估性能
         pipeline.Run(1000);
         std::cout << "测试完成。视频流已保存至 output.h264" << std::endl;
