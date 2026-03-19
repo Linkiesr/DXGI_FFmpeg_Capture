@@ -534,7 +534,7 @@ public:
 
         // 输出码流分辨率固定，变化的是可视区域（居中显示）
         D3D11_VIDEO_COLOR bgColor = {};
-        bgColor.YCbCr = { 16.0f / 255.0f, 128.0f / 255.0f, 128.0f / 255.0f, 1.0f };
+        bgColor.RGBA = { 240.0f / 255.0f, 240.0f / 255.0f, 240.0f / 255.0f, 1.0f };
         video_context->VideoProcessorSetOutputBackgroundColor(video_processor, FALSE, &bgColor);
 
         RECT srcRect = { 0, 0, (LONG)width, (LONG)height };
@@ -748,7 +748,7 @@ float4 PSMain(float4 pos : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGET {
             return false;
         }
 
-        const float clearColor[4] = { 0.f, 0.f, 0.f, 1.f };
+        const float clearColor[4] = { 240.0f / 255.0f, 240.0f / 255.0f, 240.0f / 255.0f, 1.f };
         context->OMSetRenderTargets(1, &composite_rtv, nullptr);
         context->ClearRenderTargetView(composite_rtv, clearColor);
 
