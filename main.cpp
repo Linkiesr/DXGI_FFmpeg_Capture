@@ -14,6 +14,7 @@
 #include <cstdlib>
 #include <d3d11.h>
 #include <dxgi1_2.h>
+#include <d3dcompiler.h>
 
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -27,6 +28,7 @@ extern "C" {
 // 链接 D3D11 和 DXGI 库
 #pragma comment(lib, "d3d11.lib")
 #pragma comment(lib, "dxgi.lib")
+#pragma comment(lib, "d3dcompiler.lib")
 
 using namespace std::chrono;
 
@@ -415,6 +417,12 @@ public:
             return false;
         }
 
+        std::cout << "[Init] 初始化 GPU Bilinear 缩放器..." << std::endl;
+        if (!InitShaderScaler()) {
+            Cleanup();
+            return false;
+        }
+
         // 初始化可复用的硬件帧池，避免每帧 av_frame_alloc/av_frame_free
         if (!InitFramePool()) {
             Cleanup();
@@ -469,6 +477,12 @@ public:
             return false;
         }
 
+        // 先做 BGRA bilinear 缩放，再由 VP 做 BGRA->NV12（避免边缘粉色串色）
+        if (!RenderScaledToComposite(capturedTex)) {
+            std::cerr << "RenderScaledToComposite 失败" << std::endl;
+            return false;
+        }
+
         // 使用 GPU 视频处理器执行 BGRA 到 NV12 的颜色转换
         D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC inDesc = {};
         inDesc.ViewDimension = D3D11_VPIV_DIMENSION_TEXTURE2D;
@@ -476,7 +490,7 @@ public:
         inDesc.Texture2D.ArraySlice = 0;
 
         ID3D11VideoProcessorInputView* inView = nullptr;
-        HRESULT hr = video_device->CreateVideoProcessorInputView(capturedTex, video_enum, &inDesc, &inView);
+        HRESULT hr = video_device->CreateVideoProcessorInputView(composite_tex, video_enum, &inDesc, &inView);
         if (FAILED(hr)) {
             std::cerr << "CreateVideoProcessorInputView 失败: " << std::hex << hr << std::endl;
             return false;
@@ -518,35 +532,15 @@ public:
         output_cs.Nominal_Range = D3D11_VIDEO_PROCESSOR_NOMINAL_RANGE_16_235;
         video_context->VideoProcessorSetOutputColorSpace(video_processor, &output_cs);
 
-        // Slightly lower brightness/contrast to suppress over-exposed whites.
-        auto apply_filter = [this](D3D11_VIDEO_PROCESSOR_FILTER filter, float ratio_from_default) {
-            D3D11_VIDEO_PROCESSOR_FILTER_RANGE range = {};
-            if (FAILED(video_enum->GetVideoProcessorFilterRange(filter, &range))) {
-                return;
-            }
-            INT target = range.Default + (INT)((range.Maximum - range.Minimum) * ratio_from_default);
-            if (target < range.Minimum) target = range.Minimum;
-            if (target > range.Maximum) target = range.Maximum;
-            video_context->VideoProcessorSetStreamFilter(video_processor, 0, filter, TRUE, target);
-        };
-        apply_filter(D3D11_VIDEO_PROCESSOR_FILTER_BRIGHTNESS, -0.06f);
-        apply_filter(D3D11_VIDEO_PROCESSOR_FILTER_CONTRAST, -0.04f);
-
         // 输出码流分辨率固定，变化的是可视区域（居中显示）
         D3D11_VIDEO_COLOR bgColor = {};
         bgColor.YCbCr = { 16.0f / 255.0f, 128.0f / 255.0f, 128.0f / 255.0f, 1.0f };
         video_context->VideoProcessorSetOutputBackgroundColor(video_processor, FALSE, &bgColor);
 
-        D3D11_TEXTURE2D_DESC srcDesc = {};
-        capturedTex->GetDesc(&srcDesc);
-        RECT srcRect = { 0, 0, (LONG)srcDesc.Width, (LONG)srcDesc.Height };
+        RECT srcRect = { 0, 0, (LONG)width, (LONG)height };
         video_context->VideoProcessorSetStreamSourceRect(video_processor, 0, TRUE, &srcRect);
 
-        int dstW = (std::min)(visible_width, width);
-        int dstH = (std::min)(visible_height, height);
-        LONG dstLeft = 0;
-        LONG dstTop = 0;
-        RECT dstRect = { dstLeft, dstTop, dstLeft + dstW, dstTop + dstH };
+        RECT dstRect = { 0, 0, (LONG)width, (LONG)height };
         video_context->VideoProcessorSetOutputTargetRect(video_processor, TRUE, &dstRect);
         video_context->VideoProcessorSetStreamDestRect(video_processor, 0, TRUE, &dstRect);
 
@@ -623,6 +617,13 @@ private:
     ID3D11VideoProcessor* video_processor = nullptr;
     ID3D11VideoProcessorEnumerator* video_enum = nullptr;
 
+    // BGRA 缩放中间纹理（先缩放再转 NV12，避免 VP 一步缩放+4:2:0 导致色度串扰）
+    ID3D11Texture2D* composite_tex = nullptr;
+    ID3D11RenderTargetView* composite_rtv = nullptr;
+    ID3D11VertexShader* scale_vs = nullptr;
+    ID3D11PixelShader* scale_ps = nullptr;
+    ID3D11SamplerState* scale_sampler = nullptr;
+
     // FFmpeg 硬件编码资源
     AVCodecContext* codec_ctx = nullptr;
     AVBufferRef* hw_device_ctx = nullptr;
@@ -635,6 +636,146 @@ private:
 
     // 输出 H.264 文件
     std::ofstream out_file;
+
+    bool InitCompositeTexture() {
+        D3D11_TEXTURE2D_DESC desc = {};
+        desc.Width = width;
+        desc.Height = height;
+        desc.MipLevels = 1;
+        desc.ArraySize = 1;
+        desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+        desc.SampleDesc.Count = 1;
+        desc.Usage = D3D11_USAGE_DEFAULT;
+        desc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
+        desc.CPUAccessFlags = 0;
+        desc.MiscFlags = 0;
+
+        HRESULT hr = device->CreateTexture2D(&desc, nullptr, &composite_tex);
+        if (FAILED(hr)) return false;
+        hr = device->CreateRenderTargetView(composite_tex, nullptr, &composite_rtv);
+        return SUCCEEDED(hr);
+    }
+
+    bool InitShaderScaler() {
+        if (!InitCompositeTexture()) {
+            return false;
+        }
+
+        static const char kVs[] = R"(
+struct VSOut {
+    float4 pos : SV_POSITION;
+    float2 uv  : TEXCOORD0;
+};
+VSOut VSMain(uint vid : SV_VertexID) {
+    VSOut o;
+    float2 p = (vid == 0) ? float2(-1.0, -1.0) :
+               (vid == 1) ? float2(-1.0,  3.0) :
+                            float2( 3.0, -1.0);
+    o.pos = float4(p, 0.0, 1.0);
+    o.uv = p * float2(0.5, -0.5) + 0.5;
+    return o;
+})";
+
+        static const char kPs[] = R"(
+Texture2D tex0 : register(t0);
+SamplerState samp0 : register(s0);
+float4 PSMain(float4 pos : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGET {
+    return tex0.Sample(samp0, uv);
+})";
+
+        ID3DBlob* vsBlob = nullptr;
+        ID3DBlob* psBlob = nullptr;
+        ID3DBlob* errBlob = nullptr;
+        HRESULT hr = D3DCompile(kVs, sizeof(kVs) - 1, nullptr, nullptr, nullptr, "VSMain", "vs_5_0", 0, 0, &vsBlob, &errBlob);
+        if (FAILED(hr)) {
+            if (errBlob) std::cerr << "Scale VS compile failed: " << (const char*)errBlob->GetBufferPointer() << std::endl;
+            SafeRelease(errBlob);
+            SafeRelease(vsBlob);
+            return false;
+        }
+        SafeRelease(errBlob);
+
+        hr = D3DCompile(kPs, sizeof(kPs) - 1, nullptr, nullptr, nullptr, "PSMain", "ps_5_0", 0, 0, &psBlob, &errBlob);
+        if (FAILED(hr)) {
+            if (errBlob) std::cerr << "Scale PS compile failed: " << (const char*)errBlob->GetBufferPointer() << std::endl;
+            SafeRelease(errBlob);
+            SafeRelease(vsBlob);
+            SafeRelease(psBlob);
+            return false;
+        }
+        SafeRelease(errBlob);
+
+        hr = device->CreateVertexShader(vsBlob->GetBufferPointer(), vsBlob->GetBufferSize(), nullptr, &scale_vs);
+        SafeRelease(vsBlob);
+        if (FAILED(hr)) {
+            SafeRelease(psBlob);
+            return false;
+        }
+
+        hr = device->CreatePixelShader(psBlob->GetBufferPointer(), psBlob->GetBufferSize(), nullptr, &scale_ps);
+        SafeRelease(psBlob);
+        if (FAILED(hr)) {
+            return false;
+        }
+
+        D3D11_SAMPLER_DESC sampDesc = {};
+        sampDesc.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
+        sampDesc.AddressU = D3D11_TEXTURE_ADDRESS_CLAMP;
+        sampDesc.AddressV = D3D11_TEXTURE_ADDRESS_CLAMP;
+        sampDesc.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
+        sampDesc.MaxLOD = D3D11_FLOAT32_MAX;
+        hr = device->CreateSamplerState(&sampDesc, &scale_sampler);
+        return SUCCEEDED(hr);
+    }
+
+    bool RenderScaledToComposite(ID3D11Texture2D* capturedTex) {
+        if (!capturedTex || !composite_rtv || !scale_vs || !scale_ps || !scale_sampler) {
+            return false;
+        }
+
+        D3D11_TEXTURE2D_DESC srcDesc = {};
+        capturedTex->GetDesc(&srcDesc);
+
+        D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+        srvDesc.Format = srcDesc.Format;
+        srvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+        srvDesc.Texture2D.MipLevels = 1;
+        srvDesc.Texture2D.MostDetailedMip = 0;
+
+        ID3D11ShaderResourceView* srcSrv = nullptr;
+        HRESULT hr = device->CreateShaderResourceView(capturedTex, &srvDesc, &srcSrv);
+        if (FAILED(hr)) {
+            return false;
+        }
+
+        const float clearColor[4] = { 0.f, 0.f, 0.f, 1.f };
+        context->OMSetRenderTargets(1, &composite_rtv, nullptr);
+        context->ClearRenderTargetView(composite_rtv, clearColor);
+
+        D3D11_VIEWPORT vp = {};
+        vp.TopLeftX = 0.f;
+        vp.TopLeftY = 0.f;
+        vp.Width = (FLOAT)(std::max)(1, visible_width);
+        vp.Height = (FLOAT)(std::max)(1, visible_height);
+        vp.MinDepth = 0.f;
+        vp.MaxDepth = 1.f;
+        context->RSSetViewports(1, &vp);
+
+        context->IASetInputLayout(nullptr);
+        context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        context->VSSetShader(scale_vs, nullptr, 0);
+        context->PSSetShader(scale_ps, nullptr, 0);
+        context->PSSetSamplers(0, 1, &scale_sampler);
+        context->PSSetShaderResources(0, 1, &srcSrv);
+        context->Draw(3, 0);
+
+        ID3D11ShaderResourceView* nullSrv[1] = { nullptr };
+        context->PSSetShaderResources(0, 1, nullSrv);
+        ID3D11RenderTargetView* nullRtv[1] = { nullptr };
+        context->OMSetRenderTargets(1, nullRtv, nullptr);
+        SafeRelease(srcSrv);
+        return true;
+    }
 
     // 初始化 D3D11 视频处理器，用于极速 GPU 颜色转换
     bool InitVideoProcessor() {
@@ -661,6 +802,19 @@ private:
         hr = video_device->CreateVideoProcessor(video_enum, 0, &video_processor);
         if (FAILED(hr)) {
             std::cerr << "创建视频处理器失败: " << std::hex << hr << std::endl;
+        }
+
+        // Keep VP in "pure convert+scale" mode. Auto-processing and image-enhancement
+        // filters may introduce chroma artifacts when downscaling to NV12.
+        if (SUCCEEDED(hr)) {
+            video_context->VideoProcessorSetStreamAutoProcessingMode(video_processor, 0, FALSE);
+            video_context->VideoProcessorSetStreamFilter(video_processor, 0, D3D11_VIDEO_PROCESSOR_FILTER_BRIGHTNESS, FALSE, 0);
+            video_context->VideoProcessorSetStreamFilter(video_processor, 0, D3D11_VIDEO_PROCESSOR_FILTER_CONTRAST, FALSE, 0);
+            video_context->VideoProcessorSetStreamFilter(video_processor, 0, D3D11_VIDEO_PROCESSOR_FILTER_HUE, FALSE, 0);
+            video_context->VideoProcessorSetStreamFilter(video_processor, 0, D3D11_VIDEO_PROCESSOR_FILTER_SATURATION, FALSE, 0);
+            video_context->VideoProcessorSetStreamFilter(video_processor, 0, D3D11_VIDEO_PROCESSOR_FILTER_NOISE_REDUCTION, FALSE, 0);
+            video_context->VideoProcessorSetStreamFilter(video_processor, 0, D3D11_VIDEO_PROCESSOR_FILTER_EDGE_ENHANCEMENT, FALSE, 0);
+            video_context->VideoProcessorSetStreamFilter(video_processor, 0, D3D11_VIDEO_PROCESSOR_FILTER_ANAMORPHIC_SCALING, FALSE, 0);
         }
         return SUCCEEDED(hr);
     }
@@ -794,6 +948,12 @@ private:
         if (packet) av_packet_free(&packet);
         if (codec_ctx) avcodec_free_context(&codec_ctx);
         if (hw_device_ctx) av_buffer_unref(&hw_device_ctx);
+
+        SafeRelease(scale_sampler);
+        SafeRelease(scale_ps);
+        SafeRelease(scale_vs);
+        SafeRelease(composite_rtv);
+        SafeRelease(composite_tex);
 
         SafeRelease(video_processor);
         SafeRelease(video_enum);
