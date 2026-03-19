@@ -502,10 +502,12 @@ public:
         // GPU 执行转换指令
         D3D11_VIDEO_PROCESSOR_COLOR_SPACE stream_cs = {};
         stream_cs.Usage = 0;
-        stream_cs.RGB_Range = 1; // full range RGB input (desktop BGRA)
+        // On some drivers/sessions, treating desktop duplication as limited range
+        // avoids highlight blowout in white UI regions.
+        stream_cs.RGB_Range = 0;
         stream_cs.YCbCr_Matrix = 1; // BT.709
         stream_cs.YCbCr_xvYCC = 0;
-        stream_cs.Nominal_Range = D3D11_VIDEO_PROCESSOR_NOMINAL_RANGE_0_255;
+        stream_cs.Nominal_Range = D3D11_VIDEO_PROCESSOR_NOMINAL_RANGE_16_235;
         video_context->VideoProcessorSetStreamColorSpace(video_processor, 0, &stream_cs);
 
         D3D11_VIDEO_PROCESSOR_COLOR_SPACE output_cs = {};
@@ -515,6 +517,20 @@ public:
         output_cs.YCbCr_xvYCC = 0;
         output_cs.Nominal_Range = D3D11_VIDEO_PROCESSOR_NOMINAL_RANGE_16_235;
         video_context->VideoProcessorSetOutputColorSpace(video_processor, &output_cs);
+
+        // Slightly lower brightness/contrast to suppress over-exposed whites.
+        auto apply_filter = [this](D3D11_VIDEO_PROCESSOR_FILTER filter, float ratio_from_default) {
+            D3D11_VIDEO_PROCESSOR_FILTER_RANGE range = {};
+            if (FAILED(video_enum->GetVideoProcessorFilterRange(filter, &range))) {
+                return;
+            }
+            INT target = range.Default + (INT)((range.Maximum - range.Minimum) * ratio_from_default);
+            if (target < range.Minimum) target = range.Minimum;
+            if (target > range.Maximum) target = range.Maximum;
+            video_context->VideoProcessorSetStreamFilter(video_processor, 0, filter, TRUE, target);
+        };
+        apply_filter(D3D11_VIDEO_PROCESSOR_FILTER_BRIGHTNESS, -0.06f);
+        apply_filter(D3D11_VIDEO_PROCESSOR_FILTER_CONTRAST, -0.04f);
 
         // 输出码流分辨率固定，变化的是可视区域（居中显示）
         D3D11_VIDEO_COLOR bgColor = {};
