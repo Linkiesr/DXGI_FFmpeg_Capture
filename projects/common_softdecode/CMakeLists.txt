@@ -1,10 +1,10 @@
 ﻿add_library(common_softdecode STATIC
     decoder_thread.cpp
     decoder_thread.h
-    decoded_frame.h
+    avframe_queue.h
 )
 
-# 两个渲染示例共用的软解码模块。
+# 两个渲染示例共用的软解码模块（输出 AVFrame 队列）。
 target_include_directories(common_softdecode
     PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}

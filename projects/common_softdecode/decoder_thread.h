@@ -1,15 +1,15 @@
 ﻿#pragma once
 
-#include "decoded_frame.h"
+#include "avframe_queue.h"
 
 #include <QThread>
 #include <QString>
 
-// 解码线程：解复用 + 软解码 + 统一输出为 YUV420。
+// 解码线程：解复用 + 软解码，输出 AVFrame(YUV420P) 并入队。
 class DecoderThread final : public QThread {
     Q_OBJECT
 public:
-    explicit DecoderThread(QObject* parent = nullptr);
+    explicit DecoderThread(AVFrameQueue* frameQueue, QObject* parent = nullptr);
     ~DecoderThread() override;
 
     // 输入媒体路径（文件路径或 FFmpeg 支持的流 URL）。
@@ -19,8 +19,8 @@ public:
     void stop();
 
 signals:
-    // 每解出一帧即发出该信号。
-    void frameReady(const DecodedFramePtr& frame);
+    // 每有新帧入队时发出，用于通知渲染线程刷新。
+    void frameQueued();
 
     // 输出可读的 FFmpeg 错误信息。
     void decodeError(const QString& message);
@@ -33,6 +33,5 @@ protected:
 
 private:
     QString inputPath_;
+    AVFrameQueue* frameQueue_ = nullptr;
 };
-
-Q_DECLARE_METATYPE(DecodedFramePtr)
