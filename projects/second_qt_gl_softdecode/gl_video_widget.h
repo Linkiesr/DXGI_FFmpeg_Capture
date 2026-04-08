@@ -1,12 +1,12 @@
 ﻿#pragma once
 
 #include "avframe_queue.h"
+#include "timing_stats.h"
 
 #include <QOpenGLFunctions>
 #include <QOpenGLShaderProgram>
 #include <QOpenGLWidget>
 
-// Qt 原生 OpenGL 渲染器（次优方案路径）。
 class GLVideoWidget final : public QOpenGLWidget, protected QOpenGLFunctions {
     Q_OBJECT
 public:
@@ -15,8 +15,10 @@ public:
 
     void setFrameQueue(AVFrameQueue* frameQueue);
 
+    // 打印“从队列取帧到渲染提交”耗时统计。
+    void printRenderTimingStats() const;
+
 public slots:
-    // 仅通知有新帧可用，具体取帧在渲染线程完成。
     void onFrameQueued();
 
 protected:
@@ -37,4 +39,5 @@ private:
 
     AVFrameQueue* frameQueue_ = nullptr;
     AVFrame* lastFrame_ = nullptr;
+    TimingStats renderStats_;
 };

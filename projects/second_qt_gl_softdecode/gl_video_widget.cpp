@@ -1,6 +1,9 @@
 ﻿#include "gl_video_widget.h"
 
 #include <QMetaObject>
+#include <QDebug>
+
+#include <chrono>
 
 GLVideoWidget::GLVideoWidget(QWidget* parent)
     : QOpenGLWidget(parent) {
@@ -20,6 +23,10 @@ GLVideoWidget::~GLVideoWidget() {
 
 void GLVideoWidget::setFrameQueue(AVFrameQueue* frameQueue) {
     frameQueue_ = frameQueue;
+}
+
+void GLVideoWidget::printRenderTimingStats() const {
+    qInfo().noquote() << renderStats_.summary("QueueToRenderTime(OpenGL)");
 }
 
 void GLVideoWidget::onFrameQueued() {
@@ -106,10 +113,28 @@ void GLVideoWidget::ensureTextures(int width, int height) {
 void GLVideoWidget::uploadFrame(const AVFrame* frame) {
     ensureTextures(frame->width, frame->height);
 
-    // 逐行上传，兼容 FFmpeg linesize 可能大于宽度的情况。
+    // 每个平面仅调用一次 glTexSubImage2D，避免逐行提交带来的大量驱动调用开销。
     auto uploadPlane = [this](GLuint tex, int w, int h, const uint8_t* data, int stride) {
         glBindTexture(GL_TEXTURE_2D, tex);
         glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+#ifdef GL_UNPACK_ROW_LENGTH
+        if (stride != w) {
+            glPixelStorei(GL_UNPACK_ROW_LENGTH, stride);
+        }
+        glTexSubImage2D(
+            GL_TEXTURE_2D,
+            0,
+            0,
+            0,
+            w,
+            h,
+            GL_RED,
+            GL_UNSIGNED_BYTE,
+            data);
+        if (stride != w) {
+            glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+        }
+#else
         for (int row = 0; row < h; ++row) {
             glTexSubImage2D(
                 GL_TEXTURE_2D,
@@ -122,6 +147,7 @@ void GLVideoWidget::uploadFrame(const AVFrame* frame) {
                 GL_UNSIGNED_BYTE,
                 data + row * stride);
         }
+#endif
     };
 
     uploadPlane(texY_, frame->width, frame->height, frame->data[0], frame->linesize[0]);
@@ -130,6 +156,9 @@ void GLVideoWidget::uploadFrame(const AVFrame* frame) {
 }
 
 void GLVideoWidget::paintGL() {
+    bool hasNewFrame = false;
+    auto t0 = std::chrono::steady_clock::time_point{};
+
     if (frameQueue_) {
         AVFrame* latest = frameQueue_->popLatest();
         if (latest) {
@@ -137,6 +166,8 @@ void GLVideoWidget::paintGL() {
                 av_frame_free(&lastFrame_);
             }
             lastFrame_ = latest;
+            hasNewFrame = true;
+            t0 = std::chrono::steady_clock::now();
         }
     }
 
@@ -168,4 +199,10 @@ void GLVideoWidget::paintGL() {
     glDrawArrays(GL_TRIANGLES, 0, 3);
 
     program_.release();
+
+    if (hasNewFrame) {
+        const auto t1 = std::chrono::steady_clock::now();
+        const double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+        renderStats_.addSample(ms);
+    }
 }
