@@ -1,13 +1,11 @@
 ﻿#pragma once
 
-#include "decoded_frame.h"
+#include "avframe_queue.h"
 
 #include <QWidget>
 
 #include <d3d11.h>
 #include <wrl/client.h>
-
-#include <mutex>
 
 // 嵌入 Qt 控件中的原生 D3D11 渲染器。
 class D3D11VideoWidget final : public QWidget {
@@ -16,9 +14,11 @@ public:
     explicit D3D11VideoWidget(QWidget* parent = nullptr);
     ~D3D11VideoWidget() override;
 
+    void setFrameQueue(AVFrameQueue* frameQueue);
+
 public slots:
-    // 接收解码线程送来的最新帧。
-    void onFrameReady(const DecodedFramePtr& frame);
+    // 仅通知有新帧可用，具体取帧在渲染线程完成。
+    void onFrameQueued();
 
 protected:
     void showEvent(QShowEvent* event) override;
@@ -30,7 +30,7 @@ private:
     void ensureSwapChain();
     void ensurePipeline();
     void ensureTextures(int width, int height);
-    void uploadFrame(const DecodedFrame& frame);
+    void uploadFrame(const AVFrame* frame);
     void renderFrame();
 
     using ComPtrDevice = Microsoft::WRL::ComPtr<ID3D11Device>;
@@ -43,7 +43,6 @@ private:
     Microsoft::WRL::ComPtr<ID3D11RenderTargetView> rtv_;
     Microsoft::WRL::ComPtr<ID3D11VertexShader> vs_;
     Microsoft::WRL::ComPtr<ID3D11PixelShader> ps_;
-    Microsoft::WRL::ComPtr<ID3D11InputLayout> inputLayout_;
     Microsoft::WRL::ComPtr<ID3D11SamplerState> sampler_;
 
     // Y/U/V 平面对应的动态 R8 纹理。
@@ -57,8 +56,6 @@ private:
     int texWidth_ = 0;
     int texHeight_ = 0;
 
-    // 解码线程与 UI/渲染线程共享的“最新帧”缓存。
-    std::mutex frameMutex_;
-    DecodedFramePtr latestFrame_;
+    AVFrameQueue* frameQueue_ = nullptr;
+    AVFrame* lastFrame_ = nullptr;
 };
-

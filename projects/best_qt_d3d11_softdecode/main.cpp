@@ -16,12 +16,16 @@ int main(int argc, char* argv[]) {
         return 0;
     }
 
+    AVFrameQueue frameQueue;
+
     QMainWindow window;
     auto* central = new QWidget(&window);
     auto* layout = new QHBoxLayout(central);
     layout->setContentsMargins(0, 0, 0, 0);
 
     auto* video = new D3D11VideoWidget(central);
+    video->setFrameQueue(&frameQueue);
+
     auto* overlay = new QLabel("Best方案: Qt壳 + 原生D3D11渲染 + FFmpeg软解", central);
     overlay->setStyleSheet("QLabel { color: white; background: rgba(0,0,0,120); padding: 6px; }");
     overlay->setAttribute(Qt::WA_TransparentForMouseEvents);
@@ -35,10 +39,10 @@ int main(int argc, char* argv[]) {
     overlay->raise();
     overlay->show();
 
-    DecoderThread decoder;
+    DecoderThread decoder(&frameQueue);
     decoder.setInputPath(QString::fromLocal8Bit(argv[1]));
 
-    QObject::connect(&decoder, &DecoderThread::frameReady, video, &D3D11VideoWidget::onFrameReady, Qt::QueuedConnection);
+    QObject::connect(&decoder, &DecoderThread::frameQueued, video, &D3D11VideoWidget::onFrameQueued, Qt::QueuedConnection);
     QObject::connect(&decoder, &DecoderThread::decodeError, &window, [](const QString& msg) {
         qWarning("Decode error: %s", qPrintable(msg));
     });
@@ -49,11 +53,7 @@ int main(int argc, char* argv[]) {
     decoder.start();
     const int rc = app.exec();
 
-    // 在应用退出前确保解码线程已停止。
     decoder.stop();
     decoder.wait();
     return rc;
 }
-
-
-

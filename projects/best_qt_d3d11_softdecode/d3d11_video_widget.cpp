@@ -10,7 +10,6 @@
 #pragma comment(lib, "d3dcompiler.lib")
 
 namespace {
-// 全屏三角形着色器：采样 Y/U/V 并在像素着色器中转换为 RGB。
 constexpr const char* kVsCode = R"(
 struct VSOut {
     float4 pos : SV_POSITION;
@@ -57,20 +56,22 @@ float4 main(float4 pos : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGET {
 
 D3D11VideoWidget::D3D11VideoWidget(QWidget* parent)
     : QWidget(parent) {
-    // 使用原生子窗口句柄，供 DXGI 交换链绑定。
     setAttribute(Qt::WA_NativeWindow);
     setAttribute(Qt::WA_PaintOnScreen, false);
     setAutoFillBackground(false);
 }
 
-D3D11VideoWidget::~D3D11VideoWidget() = default;
-
-void D3D11VideoWidget::onFrameReady(const DecodedFramePtr& frame) {
-    {
-        std::lock_guard<std::mutex> lock(frameMutex_);
-        latestFrame_ = frame;
+D3D11VideoWidget::~D3D11VideoWidget() {
+    if (lastFrame_) {
+        av_frame_free(&lastFrame_);
     }
-    // 在 UI 线程中安排重绘。
+}
+
+void D3D11VideoWidget::setFrameQueue(AVFrameQueue* frameQueue) {
+    frameQueue_ = frameQueue;
+}
+
+void D3D11VideoWidget::onFrameQueued() {
     QMetaObject::invokeMethod(this, "update", Qt::QueuedConnection);
 }
 
@@ -221,10 +222,9 @@ void D3D11VideoWidget::ensureTextures(int width, int height) {
     createPlane(width / 2, height / 2, &vTex_, &vSrv_);
 }
 
-void D3D11VideoWidget::uploadFrame(const DecodedFrame& frame) {
-    ensureTextures(frame.width, frame.height);
+void D3D11VideoWidget::uploadFrame(const AVFrame* frame) {
+    ensureTextures(frame->width, frame->height);
 
-    // 逐平面上传纹理数据，并处理行步长差异。
     auto updatePlane = [&](ID3D11Texture2D* tex, const uint8_t* src, int srcStride, int w, int h) {
         D3D11_MAPPED_SUBRESOURCE mapped = {};
         context_->Map(tex, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
@@ -235,9 +235,9 @@ void D3D11VideoWidget::uploadFrame(const DecodedFrame& frame) {
         context_->Unmap(tex, 0);
     };
 
-    updatePlane(yTex_.Get(), frame.y.data(), frame.width, frame.width, frame.height);
-    updatePlane(uTex_.Get(), frame.u.data(), frame.width / 2, frame.width / 2, frame.height / 2);
-    updatePlane(vTex_.Get(), frame.v.data(), frame.width / 2, frame.width / 2, frame.height / 2);
+    updatePlane(yTex_.Get(), frame->data[0], frame->linesize[0], frame->width, frame->height);
+    updatePlane(uTex_.Get(), frame->data[1], frame->linesize[1], frame->width / 2, frame->height / 2);
+    updatePlane(vTex_.Get(), frame->data[2], frame->linesize[2], frame->width / 2, frame->height / 2);
 }
 
 void D3D11VideoWidget::renderFrame() {
@@ -249,14 +249,18 @@ void D3D11VideoWidget::renderFrame() {
         return;
     }
 
-    DecodedFramePtr frame;
-    {
-        std::lock_guard<std::mutex> lock(frameMutex_);
-        frame = latestFrame_;
+    if (frameQueue_) {
+        AVFrame* latest = frameQueue_->popLatest();
+        if (latest) {
+            if (lastFrame_) {
+                av_frame_free(&lastFrame_);
+            }
+            lastFrame_ = latest;
+        }
     }
 
-    if (frame) {
-        uploadFrame(*frame);
+    if (lastFrame_) {
+        uploadFrame(lastFrame_);
     }
 
     if (!ySrv_ || !uSrv_ || !vSrv_) {
@@ -282,7 +286,6 @@ void D3D11VideoWidget::renderFrame() {
     context_->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     context_->Draw(3, 0);
 
-    // 解绑 SRV，避免纹理在其他阶段复用时产生警告。
     ID3D11ShaderResourceView* nullSrvs[] = {nullptr, nullptr, nullptr};
     context_->PSSetShaderResources(0, 3, nullSrvs);
 
