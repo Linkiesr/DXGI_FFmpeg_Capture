@@ -3,6 +3,9 @@
 #include <QMetaObject>
 #include <QResizeEvent>
 #include <QShowEvent>
+#include <QDebug>
+
+#include <chrono>
 #include <cstring>
 
 #include <d3dcompiler.h>
@@ -69,6 +72,10 @@ D3D11VideoWidget::~D3D11VideoWidget() {
 
 void D3D11VideoWidget::setFrameQueue(AVFrameQueue* frameQueue) {
     frameQueue_ = frameQueue;
+}
+
+void D3D11VideoWidget::printRenderTimingStats() const {
+    qInfo().noquote() << renderStats_.summary("QueueToRenderTime(D3D11)");
 }
 
 void D3D11VideoWidget::onFrameQueued() {
@@ -249,6 +256,9 @@ void D3D11VideoWidget::renderFrame() {
         return;
     }
 
+    bool hasNewFrame = false;
+    auto t0 = std::chrono::steady_clock::time_point{};
+
     if (frameQueue_) {
         AVFrame* latest = frameQueue_->popLatest();
         if (latest) {
@@ -256,6 +266,8 @@ void D3D11VideoWidget::renderFrame() {
                 av_frame_free(&lastFrame_);
             }
             lastFrame_ = latest;
+            hasNewFrame = true;
+            t0 = std::chrono::steady_clock::now();
         }
     }
 
@@ -290,4 +302,10 @@ void D3D11VideoWidget::renderFrame() {
     context_->PSSetShaderResources(0, 3, nullSrvs);
 
     swapChain_->Present(0, 0);
+
+    if (hasNewFrame) {
+        const auto t1 = std::chrono::steady_clock::now();
+        const double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+        renderStats_.addSample(ms);
+    }
 }

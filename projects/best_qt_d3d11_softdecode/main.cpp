@@ -10,7 +10,6 @@
 int main(int argc, char* argv[]) {
     QApplication app(argc, argv);
 
-    // 命令行参数：best_qt_d3d11_softdecode.exe <input_video>
     if (argc < 2) {
         QMessageBox::information(nullptr, "Usage", "best_qt_d3d11_softdecode.exe <input_video>");
         return 0;
@@ -48,6 +47,7 @@ int main(int argc, char* argv[]) {
     });
     QObject::connect(&decoder, &DecoderThread::decodeFinished, &window, []() {
         qInfo("Decode finished.");
+        qApp->quit();
     });
 
     decoder.start();
@@ -55,5 +55,9 @@ int main(int argc, char* argv[]) {
 
     decoder.stop();
     decoder.wait();
+
+    decoder.printDecodeTimingStats();
+    video->printRenderTimingStats();
+
     return rc;
 }

@@ -1,13 +1,13 @@
 ﻿#pragma once
 
 #include "avframe_queue.h"
+#include "timing_stats.h"
 
 #include <QWidget>
 
 #include <d3d11.h>
 #include <wrl/client.h>
 
-// 嵌入 Qt 控件中的原生 D3D11 渲染器。
 class D3D11VideoWidget final : public QWidget {
     Q_OBJECT
 public:
@@ -16,8 +16,10 @@ public:
 
     void setFrameQueue(AVFrameQueue* frameQueue);
 
+    // 打印“从队列取帧到渲染完成”耗时统计。
+    void printRenderTimingStats() const;
+
 public slots:
-    // 仅通知有新帧可用，具体取帧在渲染线程完成。
     void onFrameQueued();
 
 protected:
@@ -45,7 +47,6 @@ private:
     Microsoft::WRL::ComPtr<ID3D11PixelShader> ps_;
     Microsoft::WRL::ComPtr<ID3D11SamplerState> sampler_;
 
-    // Y/U/V 平面对应的动态 R8 纹理。
     Microsoft::WRL::ComPtr<ID3D11Texture2D> yTex_;
     Microsoft::WRL::ComPtr<ID3D11Texture2D> uTex_;
     Microsoft::WRL::ComPtr<ID3D11Texture2D> vTex_;
@@ -58,4 +59,5 @@ private:
 
     AVFrameQueue* frameQueue_ = nullptr;
     AVFrame* lastFrame_ = nullptr;
+    TimingStats renderStats_;
 };
