@@ -1,4 +1,4 @@
-build/
+build*/
 *.h264
 *.exe
 *.obj
