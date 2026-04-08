@@ -1,8 +1,7 @@
 ﻿#pragma once
 
-#include "decoded_frame.h"
+#include "avframe_queue.h"
 
-#include <QMutex>
 #include <QOpenGLFunctions>
 #include <QOpenGLShaderProgram>
 #include <QOpenGLWidget>
@@ -14,9 +13,11 @@ public:
     explicit GLVideoWidget(QWidget* parent = nullptr);
     ~GLVideoWidget() override;
 
+    void setFrameQueue(AVFrameQueue* frameQueue);
+
 public slots:
-    // 接收解码线程送来的最新帧。
-    void onFrameReady(const DecodedFramePtr& frame);
+    // 仅通知有新帧可用，具体取帧在渲染线程完成。
+    void onFrameQueued();
 
 protected:
     void initializeGL() override;
@@ -25,7 +26,7 @@ protected:
 
 private:
     void ensureTextures(int width, int height);
-    void uploadFrame(const DecodedFrame& frame);
+    void uploadFrame(const AVFrame* frame);
 
     QOpenGLShaderProgram program_;
     GLuint texY_ = 0;
@@ -34,7 +35,6 @@ private:
     int texWidth_ = 0;
     int texHeight_ = 0;
 
-    QMutex mutex_;
-    DecodedFramePtr latestFrame_;
+    AVFrameQueue* frameQueue_ = nullptr;
+    AVFrame* lastFrame_ = nullptr;
 };
-

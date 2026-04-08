@@ -12,14 +12,17 @@ GLVideoWidget::~GLVideoWidget() {
     if (texU_) glDeleteTextures(1, &texU_);
     if (texV_) glDeleteTextures(1, &texV_);
     doneCurrent();
+
+    if (lastFrame_) {
+        av_frame_free(&lastFrame_);
+    }
 }
 
-void GLVideoWidget::onFrameReady(const DecodedFramePtr& frame) {
-    {
-        QMutexLocker locker(&mutex_);
-        latestFrame_ = frame;
-    }
-    // 在 GUI 线程中安排重绘。
+void GLVideoWidget::setFrameQueue(AVFrameQueue* frameQueue) {
+    frameQueue_ = frameQueue;
+}
+
+void GLVideoWidget::onFrameQueued() {
     QMetaObject::invokeMethod(this, "update", Qt::QueuedConnection);
 }
 
@@ -100,30 +103,45 @@ void GLVideoWidget::ensureTextures(int width, int height) {
     initPlane(texV_, width / 2, height / 2);
 }
 
-void GLVideoWidget::uploadFrame(const DecodedFrame& frame) {
-    ensureTextures(frame.width, frame.height);
+void GLVideoWidget::uploadFrame(const AVFrame* frame) {
+    ensureTextures(frame->width, frame->height);
 
-    // 分别上传 Y/U/V 三个平面。
-    auto uploadPlane = [this](GLuint tex, int w, int h, const uint8_t* data) {
+    // 逐行上传，兼容 FFmpeg linesize 可能大于宽度的情况。
+    auto uploadPlane = [this](GLuint tex, int w, int h, const uint8_t* data, int stride) {
         glBindTexture(GL_TEXTURE_2D, tex);
         glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, w, h, GL_RED, GL_UNSIGNED_BYTE, data);
+        for (int row = 0; row < h; ++row) {
+            glTexSubImage2D(
+                GL_TEXTURE_2D,
+                0,
+                0,
+                row,
+                w,
+                1,
+                GL_RED,
+                GL_UNSIGNED_BYTE,
+                data + row * stride);
+        }
     };
 
-    uploadPlane(texY_, frame.width, frame.height, frame.y.data());
-    uploadPlane(texU_, frame.width / 2, frame.height / 2, frame.u.data());
-    uploadPlane(texV_, frame.width / 2, frame.height / 2, frame.v.data());
+    uploadPlane(texY_, frame->width, frame->height, frame->data[0], frame->linesize[0]);
+    uploadPlane(texU_, frame->width / 2, frame->height / 2, frame->data[1], frame->linesize[1]);
+    uploadPlane(texV_, frame->width / 2, frame->height / 2, frame->data[2], frame->linesize[2]);
 }
 
 void GLVideoWidget::paintGL() {
-    DecodedFramePtr frame;
-    {
-        QMutexLocker locker(&mutex_);
-        frame = latestFrame_;
+    if (frameQueue_) {
+        AVFrame* latest = frameQueue_->popLatest();
+        if (latest) {
+            if (lastFrame_) {
+                av_frame_free(&lastFrame_);
+            }
+            lastFrame_ = latest;
+        }
     }
 
-    if (frame) {
-        uploadFrame(*frame);
+    if (lastFrame_) {
+        uploadFrame(lastFrame_);
     }
 
     glClearColor(0.03f, 0.03f, 0.03f, 1.0f);
@@ -151,4 +169,3 @@ void GLVideoWidget::paintGL() {
 
     program_.release();
 }
-
