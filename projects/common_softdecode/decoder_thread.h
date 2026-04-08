@@ -1,6 +1,7 @@
 ﻿#pragma once
 
 #include "avframe_queue.h"
+#include "timing_stats.h"
 
 #include <QThread>
 #include <QString>
@@ -18,6 +19,9 @@ public:
     // 协作式停止标记，由 run() 循环读取。
     void stop();
 
+    // 打印“每解码一帧”耗时统计。
+    void printDecodeTimingStats() const;
+
 signals:
     // 每有新帧入队时发出，用于通知渲染线程刷新。
     void frameQueued();
@@ -34,4 +38,5 @@ protected:
 private:
     QString inputPath_;
     AVFrameQueue* frameQueue_ = nullptr;
+    TimingStats decodeStats_;
 };

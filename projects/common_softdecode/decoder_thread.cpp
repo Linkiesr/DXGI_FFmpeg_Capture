@@ -1,6 +1,9 @@
 ﻿#include "decoder_thread.h"
 
 #include <atomic>
+#include <chrono>
+
+#include <QDebug>
 
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -20,7 +23,6 @@ QString ffErr(int code) {
     return QString::fromLocal8Bit(buf);
 }
 
-// 分配一个可写的 YUV420P AVFrame。
 AVFrame* allocYuv420Frame(int width, int height, int64_t pts) {
     AVFrame* dst = av_frame_alloc();
     if (!dst) {
@@ -43,7 +45,6 @@ AVFrame* allocYuv420Frame(int width, int height, int64_t pts) {
     return dst;
 }
 
-// 将 YUV420 帧深拷贝，保证入队后生命周期独立。
 AVFrame* cloneYuv420(const AVFrame* src) {
     AVFrame* dst = allocYuv420Frame(src->width, src->height, src->best_effort_timestamp);
     if (!dst) {
@@ -80,8 +81,13 @@ void DecoderThread::stop() {
     g_stopRequested.store(true);
 }
 
+void DecoderThread::printDecodeTimingStats() const {
+    qInfo().noquote() << decodeStats_.summary("DecodeFrameTime");
+}
+
 void DecoderThread::run() {
     g_stopRequested.store(false);
+    decodeStats_ = TimingStats{};
 
     if (inputPath_.isEmpty()) {
         emit decodeError("Input path is empty.");
@@ -282,7 +288,12 @@ void DecoderThread::run() {
                 break;
             }
 
+            const auto t0 = std::chrono::steady_clock::now();
             enqueueFrame(frame);
+            const auto t1 = std::chrono::steady_clock::now();
+            const double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+            decodeStats_.addSample(ms);
+
             av_frame_unref(frame);
         }
     }
@@ -296,7 +307,13 @@ void DecoderThread::run() {
         if (ret < 0) {
             break;
         }
+
+        const auto t0 = std::chrono::steady_clock::now();
         enqueueFrame(frame);
+        const auto t1 = std::chrono::steady_clock::now();
+        const double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+        decodeStats_.addSample(ms);
+
         av_frame_unref(frame);
     }
 

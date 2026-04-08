@@ -2,6 +2,7 @@
     decoder_thread.cpp
     decoder_thread.h
     avframe_queue.h
+    timing_stats.h
 )
 
 # 两个渲染示例共用的软解码模块（输出 AVFrame 队列）。
