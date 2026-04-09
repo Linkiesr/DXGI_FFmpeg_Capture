@@ -1,5 +1,7 @@
-﻿add_executable(best_qt_d3d11_softdecode
+add_executable(best_qt_d3d11_softdecode
     main.cpp
+    best_main_window.cpp
+    best_main_window.h
     d3d11_video_widget.cpp
     d3d11_video_widget.h
 )
