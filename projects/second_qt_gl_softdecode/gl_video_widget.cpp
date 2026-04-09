@@ -3,6 +3,7 @@
 #include <QMetaObject>
 #include <QDebug>
 
+#include <algorithm>
 #include <chrono>
 
 GLVideoWidget::GLVideoWidget(QWidget* parent)
@@ -113,6 +114,15 @@ void GLVideoWidget::ensureTextures(int width, int height) {
 void GLVideoWidget::uploadFrame(const AVFrame* frame) {
     int uploadW = ((frame->width & ~1) > 2) ? (frame->width & ~1) : 2;
     int uploadH = ((frame->height & ~1) > 2) ? (frame->height & ~1) : 2;
+    // 1:1 不缩放：窗口比帧小时，仅上传左上角可见区域，避免整帧被压缩采样。
+    if (width() > 0) {
+        uploadW = (std::min)(uploadW, width());
+    }
+    if (height() > 0) {
+        uploadH = (std::min)(uploadH, height());
+    }
+    uploadW = ((uploadW & ~1) > 2) ? (uploadW & ~1) : 2;
+    uploadH = ((uploadH & ~1) > 2) ? (uploadH & ~1) : 2;
     ensureTextures(uploadW, uploadH);
 
     // 每个平面仅调用一次 glTexSubImage2D，避免逐行提交带来的大量驱动调用开销。
@@ -176,6 +186,13 @@ void GLVideoWidget::paintGL() {
     if (lastFrame_) {
         uploadFrame(lastFrame_);
     }
+
+    // 不做缩放：按帧分辨率 1:1 显示，超出窗口部分由窗口裁掉。
+    // OpenGL 视口原点在左下，因此要把 y 移到顶部区域以保持“左上角对齐”。
+    const int drawW = (texWidth_ > 0) ? texWidth_ : width();
+    const int drawH = (texHeight_ > 0) ? texHeight_ : height();
+    const int drawY = height() - drawH;
+    glViewport(0, drawY, drawW, drawH);
 
     glClearColor(0.03f, 0.03f, 0.03f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT);
