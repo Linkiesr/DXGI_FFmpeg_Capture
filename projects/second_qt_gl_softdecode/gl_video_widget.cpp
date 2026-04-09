@@ -111,7 +111,9 @@ void GLVideoWidget::ensureTextures(int width, int height) {
 }
 
 void GLVideoWidget::uploadFrame(const AVFrame* frame) {
-    ensureTextures(frame->width, frame->height);
+    int uploadW = ((frame->width & ~1) > 2) ? (frame->width & ~1) : 2;
+    int uploadH = ((frame->height & ~1) > 2) ? (frame->height & ~1) : 2;
+    ensureTextures(uploadW, uploadH);
 
     // 每个平面仅调用一次 glTexSubImage2D，避免逐行提交带来的大量驱动调用开销。
     auto uploadPlane = [this](GLuint tex, int w, int h, const uint8_t* data, int stride) {
@@ -150,9 +152,9 @@ void GLVideoWidget::uploadFrame(const AVFrame* frame) {
 #endif
     };
 
-    uploadPlane(texY_, frame->width, frame->height, frame->data[0], frame->linesize[0]);
-    uploadPlane(texU_, frame->width / 2, frame->height / 2, frame->data[1], frame->linesize[1]);
-    uploadPlane(texV_, frame->width / 2, frame->height / 2, frame->data[2], frame->linesize[2]);
+    uploadPlane(texY_, uploadW, uploadH, frame->data[0], frame->linesize[0]);
+    uploadPlane(texU_, uploadW / 2, uploadH / 2, frame->data[1], frame->linesize[1]);
+    uploadPlane(texV_, uploadW / 2, uploadH / 2, frame->data[2], frame->linesize[2]);
 }
 
 void GLVideoWidget::paintGL() {

@@ -230,7 +230,9 @@ void D3D11VideoWidget::ensureTextures(int width, int height) {
 }
 
 void D3D11VideoWidget::uploadFrame(const AVFrame* frame) {
-    ensureTextures(frame->width, frame->height);
+    int uploadW = ((frame->width & ~1) > 2) ? (frame->width & ~1) : 2;
+    int uploadH = ((frame->height & ~1) > 2) ? (frame->height & ~1) : 2;
+    ensureTextures(uploadW, uploadH);
 
     auto updatePlane = [&](ID3D11Texture2D* tex, const uint8_t* src, int srcStride, int w, int h) {
         D3D11_MAPPED_SUBRESOURCE mapped = {};
@@ -242,9 +244,9 @@ void D3D11VideoWidget::uploadFrame(const AVFrame* frame) {
         context_->Unmap(tex, 0);
     };
 
-    updatePlane(yTex_.Get(), frame->data[0], frame->linesize[0], frame->width, frame->height);
-    updatePlane(uTex_.Get(), frame->data[1], frame->linesize[1], frame->width / 2, frame->height / 2);
-    updatePlane(vTex_.Get(), frame->data[2], frame->linesize[2], frame->width / 2, frame->height / 2);
+    updatePlane(yTex_.Get(), frame->data[0], frame->linesize[0], uploadW, uploadH);
+    updatePlane(uTex_.Get(), frame->data[1], frame->linesize[1], uploadW / 2, uploadH / 2);
+    updatePlane(vTex_.Get(), frame->data[2], frame->linesize[2], uploadW / 2, uploadH / 2);
 }
 
 void D3D11VideoWidget::renderFrame() {

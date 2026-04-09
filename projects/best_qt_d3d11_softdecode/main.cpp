@@ -1,11 +1,13 @@
 ﻿#include "d3d11_video_widget.h"
-#include "decoder_thread.h"
+#include "DecodeThread.h"
 
 #include <QApplication>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QMainWindow>
 #include <QMessageBox>
+#include <QMetaObject>
+
 
 int main(int argc, char* argv[]) {
     QApplication app(argc, argv);
@@ -38,16 +40,18 @@ int main(int argc, char* argv[]) {
     overlay->raise();
     overlay->show();
 
-    DecoderThread decoder(&frameQueue);
+    DecodeThread decoder(&frameQueue);
     decoder.setInputPath(QString::fromLocal8Bit(argv[1]));
 
-    QObject::connect(&decoder, &DecoderThread::frameQueued, video, &D3D11VideoWidget::onFrameQueued, Qt::QueuedConnection);
-    QObject::connect(&decoder, &DecoderThread::decodeError, &window, [](const QString& msg) {
+    decoder.setFrameQueuedCallback([video]() {
+        QMetaObject::invokeMethod(video, "onFrameQueued", Qt::QueuedConnection);
+    });
+    decoder.setDecodeErrorCallback([](const QString& msg) {
         qWarning("Decode error: %s", qPrintable(msg));
     });
-    QObject::connect(&decoder, &DecoderThread::decodeFinished, &window, []() {
+    decoder.setDecodeFinishedCallback([]() {
         qInfo("Decode finished.");
-        qApp->quit();
+        QMetaObject::invokeMethod(qApp, "quit", Qt::QueuedConnection);
     });
 
     decoder.start();

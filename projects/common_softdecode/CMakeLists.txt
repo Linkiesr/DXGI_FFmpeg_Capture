@@ -1,6 +1,6 @@
 ﻿add_library(common_softdecode STATIC
-    decoder_thread.cpp
-    decoder_thread.h
+    DecodeThread.cpp
+    DecodeThread.h
     avframe_queue.h
     timing_stats.h
 )
