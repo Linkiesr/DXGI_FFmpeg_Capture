@@ -57,12 +57,14 @@ void SecondMainWindow::updateVideoDisplaySize() {
         return;
     }
 
+    // video_ 控件始终按客户区等比适配（可放大也可缩小）。
+    // 渲染层是否缩小由 GL 渲染逻辑控制，这里只负责控件几何尺寸。
     const double scaleX = static_cast<double>(clientW) / static_cast<double>(frameWidth_);
     const double scaleY = static_cast<double>(clientH) / static_cast<double>(frameHeight_);
     const double scale = (scaleX < scaleY) ? scaleX : scaleY;
-
     int targetW = static_cast<int>(frameWidth_ * scale);
     int targetH = static_cast<int>(frameHeight_ * scale);
+
     if (targetW < 1) targetW = 1;
     if (targetH < 1) targetH = 1;
 

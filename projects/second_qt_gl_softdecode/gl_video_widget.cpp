@@ -187,10 +187,11 @@ void GLVideoWidget::paintGL() {
         uploadFrame(lastFrame_);
     }
 
-    // 不做缩放：按帧分辨率 1:1 显示，超出窗口部分由窗口裁掉。
+    // 当渲染控件尺寸大于帧尺寸时允许放大填充；
+    // 当渲染控件尺寸小于帧尺寸时保持 1:1 并裁剪，不做缩小。
     // OpenGL 视口原点在左下，因此要把 y 移到顶部区域以保持“左上角对齐”。
-    const int drawW = (texWidth_ > 0) ? texWidth_ : width();
-    const int drawH = (texHeight_ > 0) ? texHeight_ : height();
+    const int drawW = (std::max)(texWidth_, width());
+    const int drawH = (std::max)(texHeight_, height());
     const int drawY = height() - drawH;
     glViewport(0, drawY, drawW, drawH);
 
