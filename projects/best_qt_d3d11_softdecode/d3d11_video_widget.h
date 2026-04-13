@@ -3,6 +3,7 @@
 #include "avframe_queue.h"
 #include "timing_stats.h"
 
+#include <QPaintEngine>
 #include <QWidget>
 
 #include <d3d11.h>
@@ -23,6 +24,7 @@ public slots:
     void onFrameQueued();
 
 protected:
+    QPaintEngine* paintEngine() const override;
     void showEvent(QShowEvent* event) override;
     void resizeEvent(QResizeEvent* event) override;
     void paintEvent(QPaintEvent* event) override;
@@ -60,4 +62,5 @@ private:
     AVFrameQueue* frameQueue_ = nullptr;
     AVFrame* lastFrame_ = nullptr;
     TimingStats renderStats_;
+    bool hasPresentedFrame_ = false;
 };

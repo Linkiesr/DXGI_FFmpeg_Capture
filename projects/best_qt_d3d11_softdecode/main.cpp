@@ -21,7 +21,6 @@ int main(int argc, char* argv[]) {
 
     window.resize(1280, 720);
     window.show();
-    window.showMaximized();
 
     DecodeThread decoder(&frameQueue);
     decoder.setInputPath(QString::fromLocal8Bit(argv[1]));
@@ -29,12 +28,20 @@ int main(int argc, char* argv[]) {
     decoder.setFrameQueuedCallback([video]() {
         QMetaObject::invokeMethod(video, "onFrameQueued", Qt::QueuedConnection);
     });
+    decoder.setFrameSizeCallback([&window](int w, int h) {
+        QMetaObject::invokeMethod(
+            &window,
+            "setFrameSize",
+            Qt::QueuedConnection,
+            Q_ARG(int, w),
+            Q_ARG(int, h));
+    });
     decoder.setDecodeErrorCallback([](const QString& msg) {
         qWarning("Decode error: %s", qPrintable(msg));
     });
     decoder.setDecodeFinishedCallback([]() {
         qInfo("Decode finished.");
-        QMetaObject::invokeMethod(qApp, "quit", Qt::QueuedConnection);
+        //QMetaObject::invokeMethod(qApp, "quit", Qt::QueuedConnection);
     });
 
     decoder.start();
