@@ -2,9 +2,22 @@
 
 #include <QMetaObject>
 #include <QDebug>
+#include <QOpenGLContext>
 
 #include <algorithm>
 #include <chrono>
+
+#ifndef GL_VIDEO_WIDGET_VERBOSE_LOG
+#define GL_VIDEO_WIDGET_VERBOSE_LOG 1
+#endif
+
+#if GL_VIDEO_WIDGET_VERBOSE_LOG
+#define GLW_LOG() qDebug()
+#define GLW_LOG_NQ() qDebug().noquote()
+#else
+#define GLW_LOG() while (false) qDebug()
+#define GLW_LOG_NQ() while (false) qDebug().noquote()
+#endif
 
 GLVideoWidget::GLVideoWidget(QWidget* parent)
     : QOpenGLWidget(parent) {
@@ -12,6 +25,15 @@ GLVideoWidget::GLVideoWidget(QWidget* parent)
 
 GLVideoWidget::~GLVideoWidget() {
     makeCurrent();
+    if (desktopVao_) {
+        if (QOpenGLContext::currentContext()) {
+            QOpenGLExtraFunctions* ex = QOpenGLContext::currentContext()->extraFunctions();
+            if (ex) {
+                ex->glDeleteVertexArrays(1, &desktopVao_);
+            }
+        }
+        desktopVao_ = 0;
+    }
     if (texY_) glDeleteTextures(1, &texY_);
     if (texU_) glDeleteTextures(1, &texU_);
     if (texV_) glDeleteTextures(1, &texV_);
@@ -37,51 +59,115 @@ void GLVideoWidget::onFrameQueued() {
 void GLVideoWidget::initializeGL() {
     initializeOpenGLFunctions();
 
-    const char* vs = R"(
-        #version 330 core
-        out vec2 uv;
-        const vec2 pos[3] = vec2[3](
-            vec2(-1.0, -1.0),
-            vec2(-1.0, 3.0),
-            vec2(3.0, -1.0)
-        );
-        const vec2 t[3] = vec2[3](
-            // 翻转 V 坐标，使 FFmpeg YUV（左上原点）与 OpenGL 采样坐标系一致。
-            vec2(0.0, 1.0),
-            vec2(0.0, -1.0),
-            vec2(2.0, 1.0)
-        );
-        void main() {
-            gl_Position = vec4(pos[gl_VertexID], 0.0, 1.0);
-            uv = t[gl_VertexID];
-        }
-    )";
+    QSurfaceFormat fmt = context()->format();
+    useEs2Path_ = (fmt.renderableType() == QSurfaceFormat::OpenGLES || fmt.majorVersion() < 3);
+    GLW_LOG() << "[initializeGL] renderableType=" << fmt.renderableType()
+              << "version=" << fmt.majorVersion() << "." << fmt.minorVersion()
+              << "profile=" << fmt.profile()
+              << "useEs2Path=" << useEs2Path_;
 
-    const char* fs = R"(
-        #version 330 core
-        in vec2 uv;
-        out vec4 color;
-        uniform sampler2D texY;
-        uniform sampler2D texU;
-        uniform sampler2D texV;
-        void main() {
-            float y = texture(texY, uv).r;
-            float u = texture(texU, uv).r - 0.5;
-            float v = texture(texV, uv).r - 0.5;
-            float r = y + 1.402 * v;
-            float g = y - 0.344136 * u - 0.714136 * v;
-            float b = y + 1.772 * u;
-            color = vec4(clamp(vec3(r, g, b), 0.0, 1.0), 1.0);
-        }
-    )";
+    const char* vs = nullptr;
+    const char* fs = nullptr;
+    if (useEs2Path_) {
+        vs = R"(
+            attribute vec2 aPos;
+            attribute vec2 aUv;
+            varying vec2 uv;
+            void main() {
+                gl_Position = vec4(aPos, 0.0, 1.0);
+                uv = aUv;
+            }
+        )";
+        fs = R"(
+            #ifdef GL_ES
+            precision mediump float;
+            #endif
+            varying vec2 uv;
+            uniform sampler2D texY;
+            uniform sampler2D texU;
+            uniform sampler2D texV;
+            void main() {
+                float y = texture2D(texY, uv).r;
+                float u = texture2D(texU, uv).r - 0.5;
+                float v = texture2D(texV, uv).r - 0.5;
+                float r = y + 1.402 * v;
+                float g = y - 0.344136 * u - 0.714136 * v;
+                float b = y + 1.772 * u;
+                gl_FragColor = vec4(clamp(vec3(r, g, b), 0.0, 1.0), 1.0);
+            }
+        )";
+    } else {
+        vs = R"(
+            #version 330 core
+            out vec2 uv;
+            const vec2 pos[3] = vec2[3](
+                vec2(-1.0, -1.0),
+                vec2(-1.0, 3.0),
+                vec2(3.0, -1.0)
+            );
+            const vec2 t[3] = vec2[3](
+                // 翻转 V 坐标，使 FFmpeg YUV（左上原点）与 OpenGL 采样坐标系一致。
+                vec2(0.0, 1.0),
+                vec2(0.0, -1.0),
+                vec2(2.0, 1.0)
+            );
+            void main() {
+                gl_Position = vec4(pos[gl_VertexID], 0.0, 1.0);
+                uv = t[gl_VertexID];
+            }
+        )";
+        fs = R"(
+            #version 330 core
+            in vec2 uv;
+            out vec4 color;
+            uniform sampler2D texY;
+            uniform sampler2D texU;
+            uniform sampler2D texV;
+            void main() {
+                float y = texture(texY, uv).r;
+                float u = texture(texU, uv).r - 0.5;
+                float v = texture(texV, uv).r - 0.5;
+                float r = y + 1.402 * v;
+                float g = y - 0.344136 * u - 0.714136 * v;
+                float b = y + 1.772 * u;
+                color = vec4(clamp(vec3(r, g, b), 0.0, 1.0), 1.0);
+            }
+        )";
+    }
 
-    program_.addShaderFromSourceCode(QOpenGLShader::Vertex, vs);
-    program_.addShaderFromSourceCode(QOpenGLShader::Fragment, fs);
-    program_.link();
+    const bool vsOk = program_.addShaderFromSourceCode(QOpenGLShader::Vertex, vs);
+    GLW_LOG_NQ() << "[initializeGL] VS log:\n" << program_.log();
+    const bool fsOk = program_.addShaderFromSourceCode(QOpenGLShader::Fragment, fs);
+    GLW_LOG_NQ() << "[initializeGL] FS log:\n" << program_.log();
+    const bool linkOk = program_.link();
+    GLW_LOG_NQ() << "[initializeGL] link log:\n" << program_.log();
+    GLW_LOG() << "[initializeGL] shader status: vsOk=" << vsOk
+              << "fsOk=" << fsOk
+              << "linkOk=" << linkOk
+              << "isLinked=" << program_.isLinked();
+
+    if (useEs2Path_) {
+        attrPosLoc_ = program_.attributeLocation("aPos");
+        attrUvLoc_ = program_.attributeLocation("aUv");
+    } else {
+        // CoreProfile 路径必须绑定 VAO，否则 glDrawArrays 会报 GL_INVALID_OPERATION(0x502)。
+        if (QOpenGLContext::currentContext()) {
+            QOpenGLExtraFunctions* ex = QOpenGLContext::currentContext()->extraFunctions();
+            if (ex) {
+                ex->glGenVertexArrays(1, &desktopVao_);
+                ex->glBindVertexArray(desktopVao_);
+                GLW_LOG() << "[initializeGL] desktop dummy VAO =" << desktopVao_;
+            }
+        }
+    }
 
     glGenTextures(1, &texY_);
     glGenTextures(1, &texU_);
     glGenTextures(1, &texV_);
+    GLW_LOG() << "[initializeGL] tex ids: Y=" << texY_ << "U=" << texU_ << "V=" << texV_;
+    const GLenum texErr = this->glGetError();
+    GLW_LOG() << "[initializeGL] glGetError after glGenTextures ="
+              << QString("0x%1").arg(static_cast<int>(texErr), 0, 16);
 }
 
 void GLVideoWidget::resizeGL(int w, int h) {
@@ -103,7 +189,11 @@ void GLVideoWidget::ensureTextures(int width, int height) {
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
         glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_R8, w, h, 0, GL_RED, GL_UNSIGNED_BYTE, nullptr);
+        if (useEs2Path_) {
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_LUMINANCE, w, h, 0, GL_LUMINANCE, GL_UNSIGNED_BYTE, nullptr);
+        } else {
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_R8, w, h, 0, GL_RED, GL_UNSIGNED_BYTE, nullptr);
+        }
     };
 
     initPlane(texY_, width, height);
@@ -112,6 +202,13 @@ void GLVideoWidget::ensureTextures(int width, int height) {
 }
 
 void GLVideoWidget::uploadFrame(const AVFrame* frame) {
+    GLW_LOG() << "[uploadFrame] fmt=" << frame->format
+              << "w=" << frame->width
+              << "h=" << frame->height
+              << "ls0=" << frame->linesize[0]
+              << "ls1=" << frame->linesize[1]
+              << "ls2=" << frame->linesize[2];
+
     int uploadW = ((frame->width & ~1) > 2) ? (frame->width & ~1) : 2;
     int uploadH = ((frame->height & ~1) > 2) ? (frame->height & ~1) : 2;
     // 1:1 不缩放：窗口比帧小时，仅上传左上角可见区域，避免整帧被压缩采样。
@@ -133,6 +230,7 @@ void GLVideoWidget::uploadFrame(const AVFrame* frame) {
         if (stride != w) {
             glPixelStorei(GL_UNPACK_ROW_LENGTH, stride);
         }
+        const GLenum pixelFormat = useEs2Path_ ? GL_LUMINANCE : GL_RED;
         glTexSubImage2D(
             GL_TEXTURE_2D,
             0,
@@ -140,7 +238,7 @@ void GLVideoWidget::uploadFrame(const AVFrame* frame) {
             0,
             w,
             h,
-            GL_RED,
+            pixelFormat,
             GL_UNSIGNED_BYTE,
             data);
         if (stride != w) {
@@ -148,6 +246,7 @@ void GLVideoWidget::uploadFrame(const AVFrame* frame) {
         }
 #else
         for (int row = 0; row < h; ++row) {
+            const GLenum pixelFormat = useEs2Path_ ? GL_LUMINANCE : GL_RED;
             glTexSubImage2D(
                 GL_TEXTURE_2D,
                 0,
@@ -155,7 +254,7 @@ void GLVideoWidget::uploadFrame(const AVFrame* frame) {
                 row,
                 w,
                 1,
-                GL_RED,
+                pixelFormat,
                 GL_UNSIGNED_BYTE,
                 data + row * stride);
         }
@@ -198,9 +297,21 @@ void GLVideoWidget::paintGL() {
     glClearColor(0.03f, 0.03f, 0.03f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT);
 
+    GLW_LOG() << "[paintGL] texY=" << texY_
+              << "texU=" << texU_
+              << "texV=" << texV_
+              << "linked=" << program_.isLinked()
+              << "widget=" << width() << "x" << height()
+              << "tex=" << texWidth_ << "x" << texHeight_;
+
     if (!texY_ || !texU_ || !texV_ || !program_.isLinked()) {
+        GLW_LOG() << "[paintGL] early return: texture/program invalid";
         return;
     }
+
+    GLenum errBefore = this->glGetError();
+    GLW_LOG() << "[paintGL] glGetError before bind ="
+              << QString("0x%1").arg(static_cast<int>(errBefore), 0, 16);
 
     program_.bind();
 
@@ -216,7 +327,50 @@ void GLVideoWidget::paintGL() {
     glBindTexture(GL_TEXTURE_2D, texV_);
     program_.setUniformValue("texV", 2);
 
-    glDrawArrays(GL_TRIANGLES, 0, 3);
+    if (useEs2Path_) {
+        // ES2 路径不支持 gl_VertexID，使用 attribute 顶点数据提交一个全屏四边形。
+        const GLfloat pos[] = {
+            -1.0f, -1.0f,
+             1.0f, -1.0f,
+            -1.0f,  1.0f,
+             1.0f,  1.0f
+        };
+        const GLfloat uv[] = {
+            0.0f, 1.0f,
+            1.0f, 1.0f,
+            0.0f, 0.0f,
+            1.0f, 0.0f
+        };
+        if (attrPosLoc_ >= 0) {
+            glEnableVertexAttribArray(static_cast<GLuint>(attrPosLoc_));
+            glVertexAttribPointer(static_cast<GLuint>(attrPosLoc_), 2, GL_FLOAT, GL_FALSE, 0, pos);
+        }
+        if (attrUvLoc_ >= 0) {
+            glEnableVertexAttribArray(static_cast<GLuint>(attrUvLoc_));
+            glVertexAttribPointer(static_cast<GLuint>(attrUvLoc_), 2, GL_FLOAT, GL_FALSE, 0, uv);
+        }
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        if (attrPosLoc_ >= 0) {
+            glDisableVertexAttribArray(static_cast<GLuint>(attrPosLoc_));
+        }
+        if (attrUvLoc_ >= 0) {
+            glDisableVertexAttribArray(static_cast<GLuint>(attrUvLoc_));
+        }
+        GLW_LOG() << "[paintGL] draw submitted (ES2 path)";
+    } else {
+        if (QOpenGLContext::currentContext()) {
+            QOpenGLExtraFunctions* ex = QOpenGLContext::currentContext()->extraFunctions();
+            if (ex) {
+                ex->glBindVertexArray(desktopVao_);
+            }
+        }
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+        GLW_LOG() << "[paintGL] draw submitted (Desktop path)";
+    }
+
+    GLenum errAfter = this->glGetError();
+    GLW_LOG() << "[paintGL] glGetError after draw ="
+              << QString("0x%1").arg(static_cast<int>(errAfter), 0, 16);
 
     program_.release();
 
