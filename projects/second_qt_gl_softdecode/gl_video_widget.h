@@ -4,6 +4,7 @@
 #include "timing_stats.h"
 
 #include <QOpenGLFunctions>
+#include <QOpenGLExtraFunctions>
 #include <QOpenGLShaderProgram>
 #include <QOpenGLWidget>
 
@@ -31,9 +32,13 @@ private:
     void uploadFrame(const AVFrame* frame);
 
     QOpenGLShaderProgram program_;
+    bool useEs2Path_ = false;
+    int attrPosLoc_ = -1;
+    int attrUvLoc_ = -1;
     GLuint texY_ = 0;
     GLuint texU_ = 0;
     GLuint texV_ = 0;
+    GLuint desktopVao_ = 0;
     int texWidth_ = 0;
     int texHeight_ = 0;
 

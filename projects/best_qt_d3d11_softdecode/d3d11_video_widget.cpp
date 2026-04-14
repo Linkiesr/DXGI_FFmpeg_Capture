@@ -5,6 +5,7 @@
 #include <QShowEvent>
 #include <QDebug>
 
+#include <algorithm>
 #include <chrono>
 #include <cstring>
 
@@ -60,7 +61,9 @@ float4 main(float4 pos : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGET {
 D3D11VideoWidget::D3D11VideoWidget(QWidget* parent)
     : QWidget(parent) {
     setAttribute(Qt::WA_NativeWindow);
-    setAttribute(Qt::WA_PaintOnScreen, false);
+    setAttribute(Qt::WA_PaintOnScreen, true);
+    setAttribute(Qt::WA_OpaquePaintEvent, true);
+    setAttribute(Qt::WA_NoSystemBackground, true);
     setAutoFillBackground(false);
 }
 
@@ -72,6 +75,10 @@ D3D11VideoWidget::~D3D11VideoWidget() {
 
 void D3D11VideoWidget::setFrameQueue(AVFrameQueue* frameQueue) {
     frameQueue_ = frameQueue;
+}
+
+QPaintEngine* D3D11VideoWidget::paintEngine() const {
+    return nullptr;
 }
 
 void D3D11VideoWidget::printRenderTimingStats() const {
@@ -96,6 +103,9 @@ void D3D11VideoWidget::resizeEvent(QResizeEvent* event) {
         rtv_.Reset();
         swapChain_->ResizeBuffers(0, width(), height(), DXGI_FORMAT_UNKNOWN, 0);
         ensureSwapChain();
+        if (hasPresentedFrame_) {
+            QMetaObject::invokeMethod(this, "update", Qt::QueuedConnection);
+        }
     }
 }
 
@@ -232,6 +242,15 @@ void D3D11VideoWidget::ensureTextures(int width, int height) {
 void D3D11VideoWidget::uploadFrame(const AVFrame* frame) {
     int uploadW = ((frame->width & ~1) > 2) ? (frame->width & ~1) : 2;
     int uploadH = ((frame->height & ~1) > 2) ? (frame->height & ~1) : 2;
+    // 1:1 不缩放：窗口比帧小时，仅上传左上角可见区域，避免整帧被压缩采样。
+    if (width() > 0) {
+        uploadW = (std::min)(uploadW, width());
+    }
+    if (height() > 0) {
+        uploadH = (std::min)(uploadH, height());
+    }
+    uploadW = ((uploadW & ~1) > 2) ? (uploadW & ~1) : 2;
+    uploadH = ((uploadH & ~1) > 2) ? (uploadH & ~1) : 2;
     ensureTextures(uploadW, uploadH);
 
     auto updatePlane = [&](ID3D11Texture2D* tex, const uint8_t* src, int srcStride, int w, int h) {
@@ -273,7 +292,7 @@ void D3D11VideoWidget::renderFrame() {
         }
     }
 
-    if (lastFrame_) {
+    if (lastFrame_ && hasNewFrame) {
         uploadFrame(lastFrame_);
     }
 
@@ -286,8 +305,13 @@ void D3D11VideoWidget::renderFrame() {
     context_->ClearRenderTargetView(rtv_.Get(), clearColor);
 
     D3D11_VIEWPORT vp = {};
-    vp.Width = static_cast<float>(width());
-    vp.Height = static_cast<float>(height());
+    // 对齐 OpenGL 方案：控件大于纹理时允许放大，控件小于纹理时保持不缩小并裁剪。
+    const int vpW = (std::max)(texWidth_, width());
+    const int vpH = (std::max)(texHeight_, height());
+    vp.Width = static_cast<float>((vpW > 0) ? vpW : width());
+    vp.Height = static_cast<float>((vpH > 0) ? vpH : height());
+    vp.TopLeftX = 0.0f;
+    vp.TopLeftY = 0.0f;
     vp.MinDepth = 0.0f;
     vp.MaxDepth = 1.0f;
     context_->RSSetViewports(1, &vp);
@@ -303,7 +327,8 @@ void D3D11VideoWidget::renderFrame() {
     ID3D11ShaderResourceView* nullSrvs[] = {nullptr, nullptr, nullptr};
     context_->PSSetShaderResources(0, 3, nullSrvs);
 
-    swapChain_->Present(0, 0);
+    swapChain_->Present(1, 0);
+    hasPresentedFrame_ = true;
 
     if (hasNewFrame) {
         const auto t1 = std::chrono::steady_clock::now();

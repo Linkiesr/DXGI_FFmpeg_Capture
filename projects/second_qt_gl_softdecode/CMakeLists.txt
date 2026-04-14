@@ -1,5 +1,7 @@
-﻿add_executable(second_qt_gl_softdecode
+add_executable(second_qt_gl_softdecode
     main.cpp
+    second_main_window.cpp
+    second_main_window.h
     gl_video_widget.cpp
     gl_video_widget.h
 )

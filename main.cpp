@@ -844,7 +844,7 @@ float4 PSMain(float4 pos : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGET {
         codec_ctx->color_trc = AVCOL_TRC_BT709;
         codec_ctx->colorspace = AVCOL_SPC_BT709;
         codec_ctx->color_range = AVCOL_RANGE_MPEG;
-        codec_ctx->bit_rate = 30000000; // 设置比特率
+        codec_ctx->bit_rate = 120000000; // 设置比特率
         codec_ctx->max_b_frames = 0;    // 低延迟场景下关闭 B 帧
 
         // 创建硬件设备上下文并绑定我们的 D3D11 设备
