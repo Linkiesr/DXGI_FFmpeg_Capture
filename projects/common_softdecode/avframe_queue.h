@@ -10,6 +10,8 @@ extern "C" {
 // 线程安全 AVFrame 队列：解码线程 push，渲染线程 popLatest。
 class AVFrameQueue {
 public:
+    static constexpr size_t kMaxFrames = 2;
+
     ~AVFrameQueue() {
         clear();
     }
@@ -19,6 +21,12 @@ public:
             return;
         }
         std::lock_guard<std::mutex> lock(mutex_);
+        // 固定队列容量，优先保留最新帧：满了就淘汰最旧帧。
+        while (queue_.size() >= kMaxFrames) {
+            AVFrame* stale = queue_.front();
+            queue_.pop();
+            av_frame_free(&stale);
+        }
         queue_.push(frame);
     }
 
